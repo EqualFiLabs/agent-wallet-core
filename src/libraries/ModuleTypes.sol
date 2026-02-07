@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: BUSL-1.1
+// SPDX-License-Identifier: MIT
 pragma solidity ^0.8.20;
 
 /// @dev Packed module function reference: module address (20 bytes) + entity ID (4 bytes)
