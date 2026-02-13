@@ -1,20 +1,20 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.20;
 
-import {MerkleProof} from "@openzeppelin/contracts/utils/cryptography/MerkleProof.sol";
 import {PackedUserOperation} from "@openzeppelin/contracts/interfaces/draft-IERC4337.sol";
+import {ECDSA} from "@openzeppelin/contracts/utils/cryptography/ECDSA.sol";
 
 import {IERC165} from "../../interfaces/IERC165.sol";
+import {IERC6551Account} from "../../interfaces/IERC6551Account.sol";
 import {IERC6900Module} from "../../interfaces/IERC6900Module.sol";
 import {IERC6900ValidationModule} from "../../interfaces/IERC6900ValidationModule.sol";
 import {ERC8128PolicyRegistry} from "../../core/ERC8128PolicyRegistry.sol";
-import {ERC8128CoreLib} from "../../libraries/ERC8128CoreLib.sol";
-import {GatewayClaimsV2, SessionPolicyV2} from "../../libraries/ERC8128Types.sol";
+import {SessionPolicyV2} from "../../libraries/ERC8128Types.sol";
 import {SIWACoreLib} from "../../libraries/SIWACoreLib.sol";
-import {SIWAAuthV1} from "../../libraries/SIWATypes.sol";
 
 /// @title SIWAValidationModule
-/// @notice ERC-6900 validation module for SIWA-compatible ERC-1271 authentication.
+/// @notice ERC-6900 validation module for strict SIWA-compatible ERC-1271 authentication.
+/// @dev Expects standard ERC-1271 `(hash, signature)` inputs where `signature` is the raw SIWA/ERC-8128 signature.
 contract SIWAValidationModule is IERC6900ValidationModule {
     bytes4 internal constant ERC1271_MAGICVALUE = 0x1626ba7e;
     bytes4 internal constant ERC1271_INVALID = 0xffffffff;
@@ -59,94 +59,49 @@ contract SIWAValidationModule is IERC6900ValidationModule {
         override
         returns (bytes4)
     {
-        SIWAAuthV1 memory auth;
-        try this.decodeSIWAAuth(signature) returns (SIWAAuthV1 memory decodedAuth) {
-            auth = decodedAuth;
-        } catch {
-            return ERC1271_INVALID;
+        address recoveredSigner = address(0);
+        (address signer, ECDSA.RecoverError err,) = ECDSA.tryRecover(hash, signature);
+        if (err == ECDSA.RecoverError.NoError && signer != address(0)) {
+            recoveredSigner = signer;
+            if (_validateSignerPolicy(account, entityId, signer, hash, signature)) {
+                return ERC1271_MAGICVALUE;
+            }
         }
 
-        if (auth.requestHash != hash) {
-            return ERC1271_INVALID;
-        }
-        if (auth.signer == address(0)) {
-            return ERC1271_INVALID;
-        }
-
-        GatewayClaimsV2 memory claims;
-        try this.decodeGatewayClaims(auth.claims) returns (GatewayClaimsV2 memory decodedClaims) {
-            claims = decodedClaims;
-        } catch {
-            return ERC1271_INVALID;
+        // Support contract-owned/TBA flows where the effective session signer is the account owner
+        // and signature validation must go through ERC-1271.
+        if (account.code.length != 0) {
+            try IERC6551Account(account).owner() returns (address ownerSigner) {
+                if (ownerSigner != address(0) && ownerSigner != recoveredSigner) {
+                    if (_validateSignerPolicy(account, entityId, ownerSigner, hash, signature)) {
+                        return ERC1271_MAGICVALUE;
+                    }
+                }
+            } catch {}
         }
 
-        if (auth.claimsHash != ERC8128CoreLib.computeGatewayClaimsHash(claims)) {
-            return ERC1271_INVALID;
+        return ERC1271_INVALID;
+    }
+
+    function _validateSignerPolicy(
+        address account,
+        uint32 entityId,
+        address signer,
+        bytes32 hash,
+        bytes calldata signature
+    ) internal view returns (bool) {
+        if (!registry.isPolicyActive(account, entityId, signer)) {
+            return false;
         }
 
-        (SessionPolicyV2 memory policy,,) = registry.getPolicy(account, entityId, auth.signer);
-
-        if (!registry.isPolicyActive(account, entityId, auth.signer)) {
-            return ERC1271_INVALID;
-        }
-
-        if (auth.created >= auth.expires) {
-            return ERC1271_INVALID;
-        }
-        if (block.timestamp < auth.created || block.timestamp > auth.expires) {
-            return ERC1271_INVALID;
-        }
+        (SessionPolicyV2 memory policy,,) = registry.getPolicy(account, entityId, signer);
         if (block.timestamp < policy.validAfter) {
-            return ERC1271_INVALID;
+            return false;
         }
         if (policy.validUntil != 0 && block.timestamp > policy.validUntil) {
-            return ERC1271_INVALID;
-        }
-        if (policy.maxTtlSeconds != 0 && uint256(auth.expires) - uint256(auth.created) > policy.maxTtlSeconds) {
-            return ERC1271_INVALID;
+            return false;
         }
 
-        if (!claims.isReplayable && claims.nonceHash == bytes32(0)) {
-            return ERC1271_INVALID;
-        }
-        if (claims.isReplayable && !claims.allowReplayable) {
-            return ERC1271_INVALID;
-        }
-        if (claims.isClassBound && !claims.allowClassBound) {
-            return ERC1271_INVALID;
-        }
-        if ((claims.isReplayable || claims.isClassBound) && !claims.isReadOnly) {
-            return ERC1271_INVALID;
-        }
-
-        bytes32 recomputedScopeLeaf = ERC8128CoreLib.computeGatewayScopeLeaf(
-            claims.methodBit,
-            claims.authorityHash,
-            claims.pathPrefixHash,
-            claims.isReadOnly,
-            claims.allowReplayable,
-            claims.allowClassBound,
-            claims.maxBodyBytes
-        );
-        if (recomputedScopeLeaf != claims.scopeLeaf) {
-            return ERC1271_INVALID;
-        }
-        if (!MerkleProof.verify(claims.scopeProof, policy.scopeRoot, claims.scopeLeaf)) {
-            return ERC1271_INVALID;
-        }
-
-        if (!SIWACoreLib.isValidSIWASigner(account, auth.signer, auth.requestHash, auth.signature)) {
-            return ERC1271_INVALID;
-        }
-
-        return ERC1271_MAGICVALUE;
-    }
-
-    function decodeSIWAAuth(bytes calldata signature) external pure returns (SIWAAuthV1 memory) {
-        return abi.decode(signature, (SIWAAuthV1));
-    }
-
-    function decodeGatewayClaims(bytes memory claims) external pure returns (GatewayClaimsV2 memory) {
-        return abi.decode(claims, (GatewayClaimsV2));
+        return SIWACoreLib.isValidSIWASigner(account, signer, hash, signature);
     }
 }

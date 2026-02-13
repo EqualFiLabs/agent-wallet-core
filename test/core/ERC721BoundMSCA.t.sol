@@ -328,6 +328,56 @@ contract ERC721BoundMSCATest is Test {
         assertFalse(ok);
     }
 
+    function test_IsValidSignature_RawSignatureUsesDefaultValidationFunction() public {
+        MockValidationModule validationModule = new MockValidationModule();
+        uint32 entityId = 77;
+        ValidationConfig validationConfig =
+            ValidationConfigLib.pack(address(validationModule), entityId, false, true, false);
+        ModuleEntity validationFunction = ModuleEntityLib.pack(address(validationModule), entityId);
+
+        bytes4[] memory selectors = new bytes4[](1);
+        selectors[0] = IERC1271.isValidSignature.selector;
+
+        vm.prank(owner);
+        account.installValidation(validationConfig, selectors, bytes(""), new bytes[](0));
+
+        vm.prank(owner);
+        account.setDefaultSignatureValidation(validationFunction);
+
+        bytes4 result = account.isValidSignature(keccak256("raw-siwa-signature"), bytes("raw-signature"));
+        assertEq(result, IERC1271.isValidSignature.selector);
+    }
+
+    function test_IsValidSignature_RawSignatureWithoutDefaultValidationReturnsInvalid() public view {
+        bytes4 result = account.isValidSignature(keccak256("raw-siwa-signature"), bytes("raw-signature"));
+        assertEq(result, bytes4(0xffffffff));
+    }
+
+    function test_IsValidSignature_LongRawSignatureUsesDefaultValidationFunction() public {
+        MockValidationModule validationModule = new MockValidationModule();
+        uint32 entityId = 88;
+        ValidationConfig validationConfig =
+            ValidationConfigLib.pack(address(validationModule), entityId, false, true, false);
+        ModuleEntity validationFunction = ModuleEntityLib.pack(address(validationModule), entityId);
+
+        bytes4[] memory selectors = new bytes4[](1);
+        selectors[0] = IERC1271.isValidSignature.selector;
+
+        vm.prank(owner);
+        account.installValidation(validationConfig, selectors, bytes(""), new bytes[](0));
+
+        vm.prank(owner);
+        account.setDefaultSignatureValidation(validationFunction);
+
+        bytes memory longRawSignature = new bytes(130);
+        for (uint256 i = 0; i < longRawSignature.length; i++) {
+            longRawSignature[i] = bytes1(uint8(i + 1));
+        }
+
+        bytes4 result = account.isValidSignature(keccak256("long-raw-siwa-signature"), longRawSignature);
+        assertEq(result, IERC1271.isValidSignature.selector);
+    }
+
     // **Feature: standalone-nft-agent-wallet, Property 5: Module self-modification prevention**
     function testFuzz_Property5_ModuleSelfModificationPrevention(uint96 tokenIdSeed) public {
         uint256 tokenId = uint256(tokenIdSeed) + 1;

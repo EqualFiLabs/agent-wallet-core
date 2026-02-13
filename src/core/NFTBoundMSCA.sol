@@ -38,6 +38,7 @@ abstract contract NFTBoundMSCA is
 
     uint256 internal _state;
     bool internal _bootstrapActive;
+    ModuleEntity internal _defaultSignatureValidationFunction;
 
     event BootstrapDisabled(address indexed account, uint256 timestamp);
 
@@ -221,17 +222,42 @@ abstract contract NFTBoundMSCA is
 
     function isValidSignature(bytes32 hash, bytes calldata signature) external view virtual override returns (bytes4) {
         if (_bootstrapActive && signature.length == 65) {
-            return _bootstrapValidateSignature(hash, signature) ? ERC1271_MAGICVALUE : bytes4(0xffffffff);
+            if (_bootstrapValidateSignature(hash, signature)) {
+                return ERC1271_MAGICVALUE;
+            }
         }
 
-        if (signature.length < 96) {
+        if (_isModuleSignatureEnvelope(signature)) {
+            (ModuleEntity validationFunction, bytes memory moduleSig) = abi.decode(signature, (ModuleEntity, bytes));
+            ValidationFlowLib.ensureSelectorAllowed(validationFunction, IERC1271.isValidSignature.selector);
+            ValidationFlowLib.ensureSignatureValidation(validationFunction);
+            return ValidationFlowLib.runSignatureValidation(validationFunction, address(this), msg.sender, hash, moduleSig);
+        }
+
+        if (ModuleEntity.unwrap(_defaultSignatureValidationFunction) == bytes24(0)) {
             return bytes4(0xffffffff);
         }
+        ValidationFlowLib.ensureSelectorAllowed(_defaultSignatureValidationFunction, IERC1271.isValidSignature.selector);
+        ValidationFlowLib.ensureSignatureValidation(_defaultSignatureValidationFunction);
+        return ValidationFlowLib.runSignatureValidation(
+            _defaultSignatureValidationFunction, address(this), msg.sender, hash, signature
+        );
+    }
 
-        (ModuleEntity validationFunction, bytes memory moduleSig) = abi.decode(signature, (ModuleEntity, bytes));
+    function setDefaultSignatureValidation(ModuleEntity validationFunction) external {
+        _requireOwner();
         ValidationFlowLib.ensureSelectorAllowed(validationFunction, IERC1271.isValidSignature.selector);
         ValidationFlowLib.ensureSignatureValidation(validationFunction);
-        return ValidationFlowLib.runSignatureValidation(validationFunction, address(this), msg.sender, hash, moduleSig);
+        _defaultSignatureValidationFunction = validationFunction;
+    }
+
+    function clearDefaultSignatureValidation() external {
+        _requireOwner();
+        _defaultSignatureValidationFunction = ModuleEntity.wrap(bytes24(0));
+    }
+
+    function defaultSignatureValidationFunction() external view returns (ModuleEntity) {
+        return _defaultSignatureValidationFunction;
     }
 
     function supportsInterface(bytes4 interfaceId) public view virtual override returns (bool) {
@@ -430,6 +456,36 @@ abstract contract NFTBoundMSCA is
         }
         uint256 secondSectionEnd = secondOffset + 0x20 + secondPaddedLength;
         return secondSectionEnd <= payload.length;
+    }
+
+    function _isModuleSignatureEnvelope(bytes calldata payload) internal pure returns (bool) {
+        if (payload.length < 96) {
+            return false;
+        }
+
+        uint256 bytesOffset;
+        assembly {
+            bytesOffset := calldataload(add(payload.offset, 0x20))
+        }
+        if (bytesOffset != 0x40) {
+            return false;
+        }
+
+        uint256 bytesLength;
+        assembly {
+            bytesLength := calldataload(add(payload.offset, bytesOffset))
+        }
+        if (bytesLength > type(uint256).max - 31) {
+            return false;
+        }
+
+        uint256 paddedLength = (bytesLength + 31) & ~uint256(31);
+        if (paddedLength > payload.length - bytesOffset - 0x20) {
+            return false;
+        }
+
+        uint256 sectionEnd = bytesOffset + 0x20 + paddedLength;
+        return sectionEnd == payload.length;
     }
 
     function _executeWithRuntimeValidation(bytes memory data, bytes memory authorization) internal returns (bytes memory) {
