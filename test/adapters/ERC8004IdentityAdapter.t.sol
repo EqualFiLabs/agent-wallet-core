@@ -34,6 +34,32 @@ contract MockERC8004IdentityRegistry {
         require(ownerOf[agentId] == msg.sender, "not owner");
         agentWallets[agentId] = newWallet;
     }
+
+    /// @dev Test helper to simulate agent transfer.
+    function transferOwnership(uint256 agentId, address newOwner) external {
+        ownerOf[agentId] = newOwner;
+    }
+}
+
+/// @dev Registry mock that can toggle ownerOf reverts.
+contract ToggleRevertingRegistry {
+    bool public shouldRevert;
+    mapping(uint256 => address) public ownerOfMap;
+
+    function setOwner(uint256 agentId, address owner_) external {
+        ownerOfMap[agentId] = owner_;
+    }
+
+    function setShouldRevert(bool value) external {
+        shouldRevert = value;
+    }
+
+    function ownerOf(uint256 agentId) external view returns (address) {
+        if (shouldRevert) {
+            revert("registry down");
+        }
+        return ownerOfMap[agentId];
+    }
 }
 
 contract Mock6551ExecutableAccount is IERC6551Account, IERC6551Executable {
@@ -166,5 +192,233 @@ contract ERC8004IdentityAdapterTest is Test {
             selector := mload(add(data, 32))
         }
         assertEq(selector, REGISTER_WITH_URI_SELECTOR);
+    }
+
+    // ---------------------------------------------------------------
+    // Idempotent re-recording
+    // ---------------------------------------------------------------
+
+    function test_IdempotentReRecording_SameMapping() public {
+        // Register and record once
+        vm.prank(_owner);
+        bytes memory result = _account.execute(address(_registry), 0, abi.encodeWithSignature("register()"), 0);
+        uint256 agentId = abi.decode(result, (uint256));
+
+        vm.prank(_owner);
+        _adapter.recordAgentRegistration(address(_account), agentId);
+
+        // Record the exact same mapping again — should not revert
+        vm.prank(_owner);
+        _adapter.recordAgentRegistration(address(_account), agentId);
+
+        assertEq(_adapter.getAgentId(address(_account)), agentId);
+        assertEq(_adapter.getAccount(agentId), address(_account));
+    }
+
+    // ---------------------------------------------------------------
+    // AccountAlreadyMapped
+    // ---------------------------------------------------------------
+
+    function test_RevertWhenAccountAlreadyMappedToDifferentAgentId() public {
+        // Register first agent via account
+        vm.prank(_owner);
+        bytes memory result1 = _account.execute(address(_registry), 0, abi.encodeWithSignature("register()"), 0);
+        uint256 agentId1 = abi.decode(result1, (uint256));
+
+        vm.prank(_owner);
+        _adapter.recordAgentRegistration(address(_account), agentId1);
+
+        // Register second agent via account
+        vm.prank(_owner);
+        bytes memory result2 = _account.execute(address(_registry), 0, abi.encodeWithSignature("register()"), 0);
+        uint256 agentId2 = abi.decode(result2, (uint256));
+
+        // Try to map account to a different agentId
+        vm.expectRevert(
+            abi.encodeWithSelector(ERC8004IdentityAdapter.AccountAlreadyMapped.selector, address(_account), agentId1)
+        );
+        vm.prank(_owner);
+        _adapter.recordAgentRegistration(address(_account), agentId2);
+    }
+
+    // ---------------------------------------------------------------
+    // AgentIdAlreadyMapped
+    // ---------------------------------------------------------------
+
+    function test_RevertWhenAgentIdAlreadyMappedToDifferentAccount() public {
+        // Register agent via first account
+        vm.prank(_owner);
+        bytes memory result = _account.execute(address(_registry), 0, abi.encodeWithSignature("register()"), 0);
+        uint256 agentId = abi.decode(result, (uint256));
+
+        vm.prank(_owner);
+        _adapter.recordAgentRegistration(address(_account), agentId);
+
+        // Create second account, transfer agent ownership to it in registry
+        Mock6551ExecutableAccount account2 = new Mock6551ExecutableAccount(_owner);
+        _registry.transferOwnership(agentId, address(account2));
+
+        // Try to map the same agentId to account2
+        vm.expectRevert(
+            abi.encodeWithSelector(ERC8004IdentityAdapter.AgentIdAlreadyMapped.selector, agentId, address(_account))
+        );
+        vm.prank(_owner);
+        _adapter.recordAgentRegistration(address(account2), agentId);
+    }
+
+    // ---------------------------------------------------------------
+    // isAgentRegistered — stale after ownership transfer
+    // ---------------------------------------------------------------
+
+    function test_IsAgentRegistered_ReturnsFalseAfterOwnershipTransfer() public {
+        vm.prank(_owner);
+        bytes memory result = _account.execute(address(_registry), 0, abi.encodeWithSignature("register()"), 0);
+        uint256 agentId = abi.decode(result, (uint256));
+
+        vm.prank(_owner);
+        _adapter.recordAgentRegistration(address(_account), agentId);
+        assertTrue(_adapter.isAgentRegistered(address(_account)));
+
+        // Transfer agent to a different address in the registry
+        Mock6551ExecutableAccount newOwnerAccount = new Mock6551ExecutableAccount(_owner);
+        _registry.transferOwnership(agentId, address(newOwnerAccount));
+
+        // Mapping still exists but liveness check should fail
+        assertEq(_adapter.getAgentId(address(_account)), agentId);
+        assertFalse(_adapter.isAgentRegistered(address(_account)));
+    }
+
+    // ---------------------------------------------------------------
+    // isAgentRegistered — false when registry call reverts
+    // ---------------------------------------------------------------
+
+    function test_IsAgentRegistered_ReturnsFalseWhenRegistryReverts() public {
+        // Deploy adapter pointing to a registry that can later revert.
+        ToggleRevertingRegistry badRegistry = new ToggleRevertingRegistry();
+        ERC8004IdentityAdapter badAdapter = new ERC8004IdentityAdapter(address(badRegistry));
+        address localOwner = makeAddr("localOwner");
+        Mock6551ExecutableAccount localAccount = new Mock6551ExecutableAccount(localOwner);
+        uint256 agentId = 77;
+
+        badRegistry.setOwner(agentId, address(localAccount));
+        vm.prank(localOwner);
+        badAdapter.recordAgentRegistration(address(localAccount), agentId);
+        assertTrue(badAdapter.isAgentRegistered(address(localAccount)));
+
+        badRegistry.setShouldRevert(true);
+        assertFalse(badAdapter.isAgentRegistered(address(localAccount)));
+    }
+
+    // ---------------------------------------------------------------
+    // InvalidAccount — zero address
+    // ---------------------------------------------------------------
+
+    function test_RevertWhenAccountIsZeroAddress() public {
+        vm.expectRevert(abi.encodeWithSelector(ERC8004IdentityAdapter.InvalidAccount.selector, address(0)));
+        vm.prank(_owner);
+        _adapter.recordAgentRegistration(address(0), 1);
+    }
+
+    // ---------------------------------------------------------------
+    // InvalidAccount — EOA (no code)
+    // ---------------------------------------------------------------
+
+    function test_RevertWhenAccountIsEOA() public {
+        address eoa = makeAddr("eoa");
+        vm.expectRevert(abi.encodeWithSelector(ERC8004IdentityAdapter.InvalidAccount.selector, eoa));
+        vm.prank(_owner);
+        _adapter.recordAgentRegistration(eoa, 1);
+    }
+
+    // ---------------------------------------------------------------
+    // InvalidAgentId — zero
+    // ---------------------------------------------------------------
+
+    function test_RevertWhenAgentIdIsZero() public {
+        vm.expectRevert(abi.encodeWithSelector(ERC8004IdentityAdapter.InvalidAgentId.selector, uint256(0)));
+        vm.prank(_owner);
+        _adapter.recordAgentRegistration(address(_account), 0);
+    }
+
+    // ---------------------------------------------------------------
+    // InvalidExecutionResult — wrong-length bytes
+    // ---------------------------------------------------------------
+
+    function test_RevertWhenExecutionResultTooShort() public {
+        bytes memory shortResult = abi.encodePacked(uint128(42));
+        vm.expectRevert(abi.encodeWithSelector(ERC8004IdentityAdapter.InvalidExecutionResult.selector, shortResult));
+        vm.prank(_owner);
+        _adapter.recordAgentRegistrationFromResult(address(_account), shortResult);
+    }
+
+    function test_RevertWhenExecutionResultTooLong() public {
+        bytes memory longResult = abi.encodePacked(uint256(1), uint256(2));
+        vm.expectRevert(abi.encodeWithSelector(ERC8004IdentityAdapter.InvalidExecutionResult.selector, longResult));
+        vm.prank(_owner);
+        _adapter.recordAgentRegistrationFromResult(address(_account), longResult);
+    }
+
+    function test_RevertWhenExecutionResultEmpty() public {
+        bytes memory emptyResult = "";
+        vm.expectRevert(abi.encodeWithSelector(ERC8004IdentityAdapter.InvalidExecutionResult.selector, emptyResult));
+        vm.prank(_owner);
+        _adapter.recordAgentRegistrationFromResult(address(_account), emptyResult);
+    }
+
+    // ---------------------------------------------------------------
+    // Fuzz: random account/agentId pairs with valid registry state
+    // ---------------------------------------------------------------
+
+    function testFuzz_RecordAndQuery_WithValidRegistryState(uint256 agentIdSeed) public {
+        // Bound agentId to non-zero
+        uint256 agentId = bound(agentIdSeed, 1, type(uint128).max);
+
+        // Set up registry to report _account as owner of this agentId
+        _registry.transferOwnership(agentId, address(_account));
+
+        vm.prank(_owner);
+        _adapter.recordAgentRegistration(address(_account), agentId);
+
+        assertEq(_adapter.getAgentId(address(_account)), agentId);
+        assertEq(_adapter.getAccount(agentId), address(_account));
+        assertTrue(_adapter.isAgentRegistered(address(_account)));
+    }
+
+    function testFuzz_RecordAndQuery_RandomAccountAndAgentIdPair(uint256 ownerSeed, uint256 agentIdSeed) public {
+        uint256 agentId = bound(agentIdSeed, 1, type(uint128).max);
+        address randomOwner = address(uint160(uint256(keccak256(abi.encode(ownerSeed, "owner")))));
+        vm.assume(randomOwner != address(0));
+
+        Mock6551ExecutableAccount randomAccount = new Mock6551ExecutableAccount(randomOwner);
+        _registry.transferOwnership(agentId, address(randomAccount));
+
+        vm.prank(randomOwner);
+        _adapter.recordAgentRegistration(address(randomAccount), agentId);
+
+        assertEq(_adapter.getAgentId(address(randomAccount)), agentId);
+        assertEq(_adapter.getAccount(agentId), address(randomAccount));
+        assertTrue(_adapter.isAgentRegistered(address(randomAccount)));
+    }
+
+    function testFuzz_RejectZeroAgentId(uint8) public {
+        vm.expectRevert(abi.encodeWithSelector(ERC8004IdentityAdapter.InvalidAgentId.selector, uint256(0)));
+        vm.prank(_owner);
+        _adapter.recordAgentRegistration(address(_account), 0);
+    }
+
+    function testFuzz_RejectEOAAccount(address eoa) public {
+        // Only test with addresses that have no code and are non-zero
+        vm.assume(eoa != address(0));
+        vm.assume(eoa.code.length == 0);
+
+        vm.expectRevert(abi.encodeWithSelector(ERC8004IdentityAdapter.InvalidAccount.selector, eoa));
+        vm.prank(_owner);
+        _adapter.recordAgentRegistration(eoa, 1);
+    }
+
+    function testFuzz_DecodeRejectsBadLength(bytes memory badResult) public {
+        vm.assume(badResult.length != 32);
+        vm.expectRevert(abi.encodeWithSelector(ERC8004IdentityAdapter.InvalidExecutionResult.selector, badResult));
+        _adapter.decodeRegisterResult(badResult);
     }
 }

@@ -64,3 +64,36 @@ contract Mock1271Factory {
         predicted = address(uint160(uint256(hash)));
     }
 }
+
+contract Mock1271CallTrackingFactory {
+    uint256 public deployCalls;
+
+    function deploy(bytes32 salt, address signer) external returns (address deployed) {
+        deployCalls++;
+        deployed = address(new Mock1271Owner{salt: salt}(signer));
+    }
+
+    function computeAddress(bytes32 salt, address signer) external view returns (address predicted) {
+        bytes memory initCode = abi.encodePacked(type(Mock1271Owner).creationCode, abi.encode(signer));
+        bytes32 hash = keccak256(abi.encodePacked(bytes1(0xff), address(this), salt, keccak256(initCode)));
+        predicted = address(uint160(uint256(hash)));
+    }
+}
+
+contract Mock1271RevertingFactory {
+    function deploy(bytes32, address) external pure returns (address) {
+        revert("factory revert");
+    }
+}
+
+contract Mock1271WrongAddressFactory {
+    uint256 public deployCalls;
+    address public lastDeployed;
+
+    function deploy(bytes32 salt, address signer) external returns (address deployed) {
+        deployCalls++;
+        bytes32 wrongSalt = keccak256(abi.encodePacked(salt, bytes32(uint256(1))));
+        deployed = address(new Mock1271Owner{salt: wrongSalt}(signer));
+        lastDeployed = deployed;
+    }
+}

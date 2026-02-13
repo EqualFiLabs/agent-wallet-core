@@ -71,6 +71,10 @@ abstract contract NFTBoundMSCA is
             }
         }
 
+        if (!_isRuntimeValidationEnvelope(msg.data)) {
+            revert SelectorNotInstalled(selector);
+        }
+
         (bytes memory data, bytes memory authorization) = abi.decode(msg.data, (bytes, bytes));
         bytes memory output = _executeWithRuntimeValidation(data, authorization);
         assembly {
@@ -377,6 +381,55 @@ abstract contract NFTBoundMSCA is
         assembly {
             selector := mload(add(data, 0x20))
         }
+    }
+
+    function _isRuntimeValidationEnvelope(bytes calldata payload) internal pure returns (bool) {
+        if (payload.length < 64) {
+            return false;
+        }
+
+        uint256 firstOffset;
+        uint256 secondOffset;
+        assembly {
+            firstOffset := calldataload(payload.offset)
+            secondOffset := calldataload(add(payload.offset, 0x20))
+        }
+
+        if (firstOffset != 0x40 || secondOffset < 0x60 || secondOffset > payload.length - 0x20) {
+            return false;
+        }
+
+        uint256 firstLength;
+        assembly {
+            firstLength := calldataload(add(payload.offset, firstOffset))
+        }
+
+        if (firstLength > type(uint256).max - 31) {
+            return false;
+        }
+        uint256 firstPaddedLength = (firstLength + 31) & ~uint256(31);
+        if (firstPaddedLength > payload.length - firstOffset - 0x20) {
+            return false;
+        }
+        uint256 firstSectionEnd = firstOffset + 0x20 + firstPaddedLength;
+        if (firstSectionEnd > payload.length || secondOffset < firstSectionEnd) {
+            return false;
+        }
+
+        uint256 secondLength;
+        assembly {
+            secondLength := calldataload(add(payload.offset, secondOffset))
+        }
+
+        if (secondLength > type(uint256).max - 31) {
+            return false;
+        }
+        uint256 secondPaddedLength = (secondLength + 31) & ~uint256(31);
+        if (secondPaddedLength > payload.length - secondOffset - 0x20) {
+            return false;
+        }
+        uint256 secondSectionEnd = secondOffset + 0x20 + secondPaddedLength;
+        return secondSectionEnd <= payload.length;
     }
 
     function _executeWithRuntimeValidation(bytes memory data, bytes memory authorization) internal returns (bytes memory) {
