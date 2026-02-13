@@ -1,7 +1,7 @@
 # Agent Wallet Core
 
-Protocol-agnostic NFT-bound smart account core for ERC-6551 + ERC-6900 + ERC-4337 flows, with ERC-8128 session
-authorization modules and ERC-8004 identity integration helpers.
+Protocol-agnostic NFT-bound smart account core for ERC-6551 + ERC-6900 + ERC-4337 flows, with ERC-8128
+gateway/AA validation and SIWA-signed gateway interoperability.
 
 
 ## Standards Coverage
@@ -11,7 +11,9 @@ authorization modules and ERC-8004 identity integration helpers.
 - ERC-4337: `validateUserOp` and `executeUserOp` integration
 - ERC-1271: smart-contract signature validation path
 - ERC-6492: counterfactual signature wrapper support (via `OwnerValidationModule`)
-- ERC-8128: SIWA v2 policy registry + gateway and AA session validation modules
+- ERC-8128 (Draft): signed HTTP request verification backends for SCAs
+  - gateway path: `SIWAValidationModule` with `SIWAAuthV1` envelope + internal policy checks
+  - AA path: `ERC8128AAValidationModuleV2` with `SessionAuthV2`
 - ERC-8004: identity registry integration helpers (via `ERC8004IdentityAdapter`)
 - ERC-165: interface introspection
 - ERC-721 receiver support
@@ -31,6 +33,7 @@ authorization modules and ERC-8004 identity integration helpers.
   - `SessionKeyValidationModule.sol`: scoped session key auth/policies
   - `ERC8128GatewayValidationModuleV2.sol`: ERC-8128 gateway (`validateSignature`) session validation
   - `ERC8128AAValidationModuleV2.sol`: ERC-8128 ERC-4337 (`validateUserOp`) session validation
+  - `SIWAValidationModule.sol`: SIWA-signed ERC-8128 gateway (`validateSignature`) validation
 - `src/libraries/`
   - `MSCAStorage.sol`: ERC-7201 namespaced storage slot
   - `ExecutionFlowLib.sol`: hook routing, depth/gas/recursion guards
@@ -38,6 +41,7 @@ authorization modules and ERC-8004 identity integration helpers.
   - `TokenDataLib.sol`: ERC-6551 footer extraction
   - `EIP712DomainLib.sol`: canonical domain serialize/parse helper
   - `ERC8128CoreLib.sol`, `ERC8128Types.sol`: ERC-8128 v2 hashing, auth types, and signer helpers
+  - `SIWACoreLib.sol`, `SIWATypes.sol`: SIWA hashing, signer helpers, and auth types
 - `src/adapters/`
   - `IOwnerResolver.sol`, `ERC721OwnerResolver.sol`
   - `ERC8004IdentityAdapter.sol`: optional identity registration helper
@@ -112,6 +116,27 @@ authorization modules and ERC-8004 identity integration helpers.
 - ERC-6900 validation module for ERC-4337 `validateUserOp`
 - Supports install-time selector/TTL presets and per-call Merkle-scoped claim validation
 
+### SIWAValidationModule
+
+- Module ID: `agent.wallet.siwa-validation.1.0.0`
+- ERC-6900 gateway validation module for SIWA-signed ERC-8128 requests
+- Validates `SIWAAuthV1` envelope bindings (`requestHash`, `claimsHash`, `created`/`expires`)
+- Decodes `auth.claims` as `GatewayClaimsV2` and enforces scope proof/policy constraints
+- Uses `auth.signer` as the session key identity and enforces registry policy activity/window checks
+- Uses NR signer safety rules through `SIWACoreLib.isValidSIWASigner`
+
+## ERC-8128 Integration Modes
+
+The repository supports:
+
+- Gateway (`isValidSignature`) path:
+  - `SIWAAuthV1` envelope
+  - `SIWAValidationModule` for ERC-1271
+  - SIWA signer verification at the boundary + internal session policy authorization in registry
+- AA (`validateUserOp`) path:
+  - `SessionAuthV2` envelope
+  - `ERC8128AAValidationModuleV2` for ERC-4337
+
 ## Optional Components
 
 ### ERC8004IdentityAdapter
@@ -160,6 +185,12 @@ Fuzz run count is configured at `256` in `foundry.toml`.
 Continuous integration also runs `forge test -vv` in GitHub Actions:
 
 - `.github/workflows/forge-test.yml`
+
+Compatibility and SIWA-focused suites include:
+
+- `test/modules/SIWAValidationModule.t.sol`
+- `test/siwa/SIWATypesAndCoreLib.t.sol`
+- `test/siwa/SIWACompatVectors.t.sol`
 
 ## Integrating as a Submodule
 
