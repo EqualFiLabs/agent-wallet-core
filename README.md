@@ -1,6 +1,7 @@
 # Agent Wallet Core
 
-Protocol-agnostic NFT-bound smart account core for ERC-6551 + ERC-6900 + ERC-4337 flows.
+Protocol-agnostic NFT-bound smart account core for ERC-6551 + ERC-6900 + ERC-4337 flows, with ERC-8128 session
+authorization modules and ERC-8004 identity integration helpers.
 
 
 ## Standards Coverage
@@ -10,6 +11,8 @@ Protocol-agnostic NFT-bound smart account core for ERC-6551 + ERC-6900 + ERC-433
 - ERC-4337: `validateUserOp` and `executeUserOp` integration
 - ERC-1271: smart-contract signature validation path
 - ERC-6492: counterfactual signature wrapper support (via `OwnerValidationModule`)
+- ERC-8128: SIWA v2 policy registry + gateway and AA session validation modules
+- ERC-8004: identity registry integration helpers (via `ERC8004IdentityAdapter`)
 - ERC-165: interface introspection
 - ERC-721 receiver support
 
@@ -19,18 +22,22 @@ Protocol-agnostic NFT-bound smart account core for ERC-6551 + ERC-6900 + ERC-433
   - `NFTBoundMSCA.sol`: abstract modular account implementation
   - `ERC721BoundMSCA.sol`: account owner from `IERC721.ownerOf`
   - `ResolverBoundMSCA.sol`: account owner from `IOwnerResolver`
+  - `ERC8128PolicyRegistry.sol`: unified onchain policy registry for ERC-8128 v2 modules
   - `BeaconProxy.sol`: optional beacon-mode account proxy
   - `BeaconGovernance.sol`: timelock queue/execute/cancel upgrade helper
   - `DirectDeploymentFactory.sol`: helper for direct (non-beacon) deployment
 - `src/modules/validation/`
   - `OwnerValidationModule.sol`: owner auth with EIP-712 + ERC-6492 + ERC-1271 paths
   - `SessionKeyValidationModule.sol`: scoped session key auth/policies
+  - `ERC8128GatewayValidationModuleV2.sol`: ERC-8128 gateway (`validateSignature`) session validation
+  - `ERC8128AAValidationModuleV2.sol`: ERC-8128 ERC-4337 (`validateUserOp`) session validation
 - `src/libraries/`
   - `MSCAStorage.sol`: ERC-7201 namespaced storage slot
   - `ExecutionFlowLib.sol`: hook routing, depth/gas/recursion guards
   - `ValidationFlowLib.sol`, `ExecutionManagementLib.sol`, `ValidationManagementLib.sol`
   - `TokenDataLib.sol`: ERC-6551 footer extraction
   - `EIP712DomainLib.sol`: canonical domain serialize/parse helper
+  - `ERC8128CoreLib.sol`, `ERC8128Types.sol`: ERC-8128 v2 hashing, auth types, and signer helpers
 - `src/adapters/`
   - `IOwnerResolver.sol`, `ERC721OwnerResolver.sol`
   - `ERC8004IdentityAdapter.sol`: optional identity registration helper
@@ -44,6 +51,7 @@ Protocol-agnostic NFT-bound smart account core for ERC-6551 + ERC-6900 + ERC-433
 - `NFTBoundMSCA` delegates ownership to abstract `_owner()`.
 - `ERC721BoundMSCA` resolves owner from bound token `(chainId, tokenContract, tokenId)`.
 - `ResolverBoundMSCA` resolves owner via `IOwnerResolver`.
+- `ResolverBoundMSCA` supports owner-configurable resolver updater role for governance/timelock flows.
 
 ### Bootstrap Lifecycle
 
@@ -56,6 +64,11 @@ Protocol-agnostic NFT-bound smart account core for ERC-6551 + ERC-6900 + ERC-433
 - Supports install/uninstall for execution and validation modules.
 - Prevents module self-modification.
 - Enforces selector conflict checks for native account selectors.
+
+### Runtime Envelope Validation
+
+- Fallback runtime validation path enforces strict ABI envelope shape for `(bytes data, bytes authorization)`.
+- Invalid fallback payloads fail early before decode/execution.
 
 ### Hook Safety
 
@@ -87,6 +100,18 @@ Protocol-agnostic NFT-bound smart account core for ERC-6551 + ERC-6900 + ERC-433
 - Per-policy budget tracking and enforcement
 - Runtime replay protection via consumed replay digests
 
+### ERC8128GatewayValidationModuleV2
+
+- Module ID: `agent.wallet.erc8128-gateway-validation.2.0.0`
+- ERC-6900 gateway validation module for ERC-1271-style signatures
+- Validates policy activity, epoch/policy nonce binding, session windows, and scope proofs
+
+### ERC8128AAValidationModuleV2
+
+- Module ID: `agent.wallet.erc8128-aa-validation.2.0.0`
+- ERC-6900 validation module for ERC-4337 `validateUserOp`
+- Supports install-time selector/TTL presets and per-call Merkle-scoped claim validation
+
 ## Optional Components
 
 ### ERC8004IdentityAdapter
@@ -97,6 +122,10 @@ Optional helper adapter (not an ERC-6900 module) to:
 - decode registration result payloads
 - record verified `account -> agentId` mappings
 - expose mapping helper views
+- integrate with ERC-8004 Identity Registry ownership checks (`ownerOf(agentId)`)
+
+This repository does not implement full ERC-8004 registries (identity/reputation/validation). It provides account-side
+integration helpers for identity registration flows.
 
 ### Beacon Mode
 
@@ -127,6 +156,10 @@ forge test -vv
 ```
 
 Fuzz run count is configured at `256` in `foundry.toml`.
+
+Continuous integration also runs `forge test -vv` in GitHub Actions:
+
+- `.github/workflows/forge-test.yml`
 
 ## Integrating as a Submodule
 
