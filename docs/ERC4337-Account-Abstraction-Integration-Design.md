@@ -6,7 +6,7 @@ Status: Draft
 
 This document describes how Agent Wallet Core integrates with [ERC-4337](https://eips.ethereum.org/EIPS/eip-4337) (Account Abstraction Using Alt Mempool) to provide smart account execution for NFT-bound modular accounts. ERC-4337 defines a standard interface for smart contract accounts to participate in a decentralized UserOperation mempool, where bundlers submit operations to a singleton `EntryPoint` contract that orchestrates validation and execution.
 
-Agent Wallet Core implements ERC-4337 at the account layer (`NFTBoundMSCA`) and delegates validation to pluggable ERC-6900 validation modules. The account itself handles EntryPoint gating, signature routing, bootstrap mode, gas prepayment, and execution dispatch. Validation modules — `OwnerValidationModule`, `SessionKeyValidationModule`, and `ERC8128AAValidationModuleV2` — each implement `validateUserOp` with different authorization models ranging from direct owner signing to scoped session delegation with Merkle-proven call constraints.
+Agent Wallet Core implements ERC-4337 at the account layer (`NFTBoundMSCA`) and delegates validation to pluggable ERC-6900 validation modules. The account itself handles EntryPoint gating, signature routing, bootstrap mode, gas prepayment, and execution dispatch. Validation modules — `OwnerValidationModule`, `SessionKeyValidationModule`, and `ERC8128AAValidationModule` — each implement `validateUserOp` with different authorization models ranging from direct owner signing to scoped session delegation with Merkle-proven call constraints.
 
 Core outcomes:
 - `IAccount` and `IAccountExecute` implementation gated exclusively to the immutable EntryPoint
@@ -25,7 +25,7 @@ In scope:
 - EntryPoint gas prepayment mechanics
 - `OwnerValidationModule` UserOp validation (EIP-712 owner signature, ERC-6492 counterfactual support)
 - `SessionKeyValidationModule` UserOp validation (scoped session keys with budget tracking)
-- `ERC8128AAValidationModuleV2` UserOp validation (session delegation with Merkle scope proofs)
+- `ERC8128AAValidationModule` UserOp validation (session delegation with Merkle scope proofs)
 - validation data packing and time-range intersection
 - execution selector parsing (`execute`, `executeBatch`, `execute` with operation)
 - deployment patterns (direct and beacon-proxied) with EntryPoint binding
@@ -77,7 +77,7 @@ graph TB
     subgraph "Validation Modules"
         OwnerMod["OwnerValidationModule<br/>(EIP-712 owner sig)"]
         SessionMod["SessionKeyValidationModule<br/>(scoped session keys)"]
-        AAMod["ERC8128AAValidationModuleV2<br/>(Merkle-proven AA sessions)"]
+        AAMod["ERC8128AAValidationModule<br/>(Merkle-proven AA sessions)"]
     end
 
     Signer -->|"signs UserOp"| Bundler
@@ -104,7 +104,7 @@ graph TB
 | `ExecutionFlowLib` | Library handling execution hook routing: pre/post hooks with depth and gas guards. |
 | `OwnerValidationModule` | Validates UserOps signed by the current NFT-bound owner via EIP-712 typed data. Supports EOA (ECDSA), SCA (ERC-1271), and counterfactual (ERC-6492) owner signatures. |
 | `SessionKeyValidationModule` | Validates UserOps signed by scoped session keys with target/selector allowlists, value limits, cumulative budget tracking, and time windows. |
-| `ERC8128AAValidationModuleV2` | Validates UserOps using ERC-8128 session delegation envelopes with Merkle-proven call scope, install presets, and policy registry integration. |
+| `ERC8128AAValidationModule` | Validates UserOps using ERC-8128 session delegation envelopes with Merkle-proven call scope, install presets, and policy registry integration. |
 
 ### Contract Inheritance and Interface Graph
 
@@ -547,13 +547,13 @@ The module supports two revocation granularities (mirroring the ERC-8128 policy 
 - `revokeSessionKey(account, entityId, sessionKey)` — increments `policyNonce`, invalidating the current policy for one session key
 - `revokeAllSessionKeys(account, entityId)` — increments `epoch`, invalidating all session keys for the entity
 
-### ERC8128AAValidationModuleV2
+### ERC8128AAValidationModule
 
 The most sophisticated validation module, designed for ERC-8128 session delegation over the ERC-4337 path. This module is documented in detail in the [ERC-8128 Unified Session Architecture](./ERC8128-SIWA-Spec.md). The following summarizes its ERC-4337-specific behavior.
 
 #### Key Differences from SessionKeyValidationModule
 
-| Aspect | SessionKeyValidationModule | ERC8128AAValidationModuleV2 |
+| Aspect | SessionKeyValidationModule | ERC8128AAValidationModule |
 |---|---|---|
 | Policy storage | Module-internal mappings | External `ERC8128PolicyRegistry` (shared with gateway module) |
 | Scope model | Target/selector allowlists | Merkle tree of scope leaves with per-call proofs |
@@ -772,7 +772,7 @@ Bits 208-255:  validAfter (uint48)
 | Bootstrap | `address(0)` on success, `address(1)` on failure | 0 (no expiry) | 0 (immediate) |
 | OwnerValidationModule | `address(0)` on success, `address(1)` on failure | 0 (no expiry) | 0 (immediate) |
 | SessionKeyValidationModule | `address(0)` | `policy.validUntil` | `policy.validAfter` |
-| ERC8128AAValidationModuleV2 | `address(0)` | `min(auth.expires, policy.validUntil)` | `max(auth.created, policy.validAfter)` |
+| ERC8128AAValidationModule | `address(0)` | `min(auth.expires, policy.validUntil)` | `max(auth.created, policy.validAfter)` |
 
 ## Security Considerations
 
@@ -883,9 +883,9 @@ A module can support both by setting both flags during installation.
 | `test/core/ResolverBoundMSCA.t.sol` | Resolver-based ownership with same ERC-4337 surface |
 | `test/modules/OwnerValidationModule.t.sol` | Owner signature validation: EIP-712 UserOp digest, EOA/SCA/ERC-6492 paths |
 | `test/modules/SessionKeyValidationModule.t.sol` | Session key validation: policy enforcement, call permission parsing, budget tracking, epoch revocation |
-| `test/modules/ERC8128AAValidationModuleV2.t.sol` | AA session validation: Merkle proofs, install presets, call parsing, time-range packing |
-| `test/modules/ERC8128V2CrossCutting.t.sol` | Cross-module revocation, scope rotation, replay prevention |
-| `test/modules/ERC8128V2UnitConformance.t.sol` | Interface conformance, edge cases |
+| `test/modules/ERC8128AAValidationModule.t.sol` | AA session validation: Merkle proofs, install presets, call parsing, time-range packing |
+| `test/modules/SIWAValidationModule.t.sol` | SIWA gateway validation (signature path), malformed envelope rejection, policy/NR checks |
+| `test/siwa/SIWACompatVectors.t.sol` | SIWA canonical vectors and pause-state enforcement |
 | `test/core/DirectDeploymentFactory.t.sol` | Factory deployment with EntryPoint binding |
 | `test/core/BeaconProxy.t.sol` | Beacon proxy delegation |
 | `test/core/BeaconGovernance.t.sol` | Timelock governance for upgrades |
@@ -909,7 +909,7 @@ A module can support both by setting both flags during installation.
 | P13: Session key epoch revocation | Incrementing the epoch invalidates all session keys for the entity. |
 | P14: Owner signature acceptance | A correctly signed EIP-712 UserOp digest from the current owner is accepted by `OwnerValidationModule`. |
 | P15: ERC-6492 counterfactual support | An ERC-6492 wrapped signature from an undeployed owner SCA is accepted after factory deployment. |
-| P16: AA install preset enforcement | Without an initialized preset, `ERC8128AAValidationModuleV2` rejects all UserOps; with a preset, only listed selectors are accepted. |
+| P16: AA install preset enforcement | Without an initialized preset, `ERC8128AAValidationModule` rejects all UserOps; with a preset, only listed selectors are accepted. |
 | P17: AA Merkle scope verification | Valid single proofs and multiproofs are accepted; invalid proofs are rejected. |
 | P18: AA time-range packing | Returned `validAfter` and `validUntil` correctly reflect `max(auth.created, policy.validAfter)` and `min(auth.expires, policy.validUntil)`. |
 | P19: Batch module target prohibition | `executeBatch` calls targeting installed modules revert with `ModuleTargetNotAllowed`. |
@@ -924,7 +924,7 @@ A module can support both by setting both flags during installation.
 2. Deploy account implementations: `ERC721BoundMSCA(entryPoint)` and/or `ResolverBoundMSCA(entryPoint, resolver)`.
 3. Optionally deploy `BeaconProxy` + `BeaconGovernance` for upgradeable accounts.
 4. Deploy `DirectDeploymentFactory` for non-upgradeable accounts.
-5. Deploy validation modules: `OwnerValidationModule`, `SessionKeyValidationModule`, `ERC8128AAValidationModuleV2(registryAddress)`.
+5. Deploy validation modules: `OwnerValidationModule`, `SessionKeyValidationModule`, `ERC8128AAValidationModule(registryAddress)`.
 6. Create account instances via factory or beacon proxy.
 7. Install validation modules via `installValidation` (using bootstrap-mode UserOps or direct owner calls).
 8. Call `disableBootstrap()` from the owner to lock down the account.
@@ -939,7 +939,7 @@ A module can support both by setting both flags during installation.
 | `ResolverBoundMSCA` | Passes `entryPoint` to `NFTBoundMSCA`; reverts with `InvalidResolver(address(0))` if resolver is zero |
 | `BeaconProxy` | Reverts with `BeaconNotContract` if beacon has no code |
 | `BeaconGovernance` | Reverts with `InvalidAdmin(address(0))` and `InvalidMinDelay(0)` |
-| `ERC8128AAValidationModuleV2` | Reverts with `InvalidRegistry(address(0))` if registry is zero |
+| `ERC8128AAValidationModule` | Reverts with `InvalidRegistry(address(0))` if registry is zero |
 
 ## Open Questions
 

@@ -5,7 +5,7 @@ import {Test} from "forge-std/Test.sol";
 import {PackedUserOperation} from "@openzeppelin/contracts/interfaces/draft-IERC4337.sol";
 
 import {ERC8128PolicyRegistry} from "../../src/core/ERC8128PolicyRegistry.sol";
-import {ERC8128AAValidationModuleV2} from "../../src/modules/validation/ERC8128AAValidationModuleV2.sol";
+import {ERC8128AAValidationModule} from "../../src/modules/validation/ERC8128AAValidationModule.sol";
 import {SessionAuthV2, AAClaimsV2, AACallClaimV2, ParsedCall} from "../../src/libraries/ERC8128Types.sol";
 import {Call} from "../../src/libraries/ModuleTypes.sol";
 import {IERC165} from "../../src/interfaces/IERC165.sol";
@@ -13,7 +13,7 @@ import {IERC6900Module} from "../../src/interfaces/IERC6900Module.sol";
 import {IERC6900ValidationModule} from "../../src/interfaces/IERC6900ValidationModule.sol";
 import {Mock6551Account} from "../mocks/OwnerValidationMocks.sol";
 
-contract ERC8128AAValidationModuleV2Test is Test {
+contract ERC8128AAValidationModuleTest is Test {
     uint256 internal constant SECP256K1_N =
         0xFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFEBAAEDCE6AF48A03BBFD25E8CD0364141;
 
@@ -33,15 +33,15 @@ contract ERC8128AAValidationModuleV2Test is Test {
     );
 
     ERC8128PolicyRegistry internal registry;
-    ERC8128AAValidationModuleV2 internal module;
+    ERC8128AAValidationModule internal module;
 
     function setUp() public {
         registry = new ERC8128PolicyRegistry();
-        module = new ERC8128AAValidationModuleV2(address(registry));
+        module = new ERC8128AAValidationModule(address(registry));
     }
 
     function test_ModuleMetadata_ConformsToERC6900Interfaces() public view {
-        assertEq(module.moduleId(), "agent.wallet.erc8128-aa-validation.2.0.0");
+        assertEq(module.moduleId(), "agent.wallet.erc8128-aa-validation.1.0.0");
         assertTrue(module.supportsInterface(type(IERC165).interfaceId));
         assertTrue(module.supportsInterface(type(IERC6900Module).interfaceId));
         assertTrue(module.supportsInterface(type(IERC6900ValidationModule).interfaceId));
@@ -52,7 +52,7 @@ contract ERC8128AAValidationModuleV2Test is Test {
     }
 
     function test_ValidateRuntime_RevertsAsUnsupported() public {
-        vm.expectRevert(ERC8128AAValidationModuleV2.RuntimeValidationNotSupported.selector);
+        vm.expectRevert(ERC8128AAValidationModule.RuntimeValidationNotSupported.selector);
         module.validateRuntime(address(0), 0, address(0), 0, bytes(""), bytes(""));
     }
 
@@ -448,8 +448,8 @@ contract ERC8128AAValidationModuleV2Test is Test {
         uint256 correctPreset = module.validateUserOp(entityId, userOp, userOpHash);
         assertNotEq(correctPreset, SIG_VALIDATION_FAILED);
 
-        ERC8128AAValidationModuleV2.UninstallPresetConfig memory uninstallConfig =
-            ERC8128AAValidationModuleV2.UninstallPresetConfig({account: address(account), entityId: entityId});
+        ERC8128AAValidationModule.UninstallPresetConfig memory uninstallConfig =
+            ERC8128AAValidationModule.UninstallPresetConfig({account: address(account), entityId: entityId});
         vm.prank(address(account));
         module.onUninstall(abi.encode(uninstallConfig));
 
@@ -465,7 +465,7 @@ contract ERC8128AAValidationModuleV2Test is Test {
         uint32 minTtlSeconds,
         uint32 maxTtlSeconds
     ) internal {
-        ERC8128AAValidationModuleV2.InstallPresetConfig memory config = ERC8128AAValidationModuleV2.InstallPresetConfig({
+        ERC8128AAValidationModule.InstallPresetConfig memory config = ERC8128AAValidationModule.InstallPresetConfig({
             account: account,
             entityId: entityId,
             allowedSelectors: allowedSelectors,

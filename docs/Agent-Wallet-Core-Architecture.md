@@ -50,7 +50,7 @@ This document describes the overall architecture and how the standards compose t
 | ERC-6551 (Token Bound Accounts) | [ERC6551-Token-Bound-Account-Integration-Design.md](./ERC6551-Token-Bound-Account-Integration-Design.md) |
 | ERC-6900 (Modular Smart Contract Accounts) | [ERC6900-Modular-Account-Integration-Design.md](./ERC6900-Modular-Account-Integration-Design.md) |
 | ERC-4337 (Account Abstraction) | [ERC4337-Account-Abstraction-Integration-Design.md](./ERC4337-Account-Abstraction-Integration-Design.md) |
-| ERC-8128 (Signed HTTP Requests) | [ERC8128-SIWA-Spec.md](./ERC8128-SIWA-Spec.md) |
+| ERC-8128 + SIWA (Signed HTTP Requests + Sign In With Agent) | [SIWA-Integration-Design.md](./SIWA-Integration-Design.md) |
 | ERC-8004 (Agent Identity) | [ERC8004-Identity-Integration-Design.md](./ERC8004-Identity-Integration-Design.md) |
 | ERC-6492 (Counterfactual Signatures) | [ERC6492-Counterfactual-Signature-Integration-Design.md](./ERC6492-Counterfactual-Signature-Integration-Design.md) |
 
@@ -175,8 +175,8 @@ graph TB
     subgraph "Onchain — Validation Modules"
         OwnerMod["OwnerValidationModule"]
         SessionMod["SessionKeyValidationModule"]
-        GatewayMod["ERC8128GatewayValidationModuleV2"]
-        AAMod["ERC8128AAValidationModuleV2"]
+        GatewayMod["SIWAValidationModule"]
+        AAMod["ERC8128AAValidationModule"]
     end
 
     subgraph "Onchain — Infrastructure"
@@ -261,8 +261,8 @@ graph TB
     subgraph "Validation Modules"
         OwnerVal["OwnerValidationModule"]
         SessionVal["SessionKeyValidationModule"]
-        GatewayVal["ERC8128GatewayValidationModuleV2"]
-        AAVal["ERC8128AAValidationModuleV2"]
+        GatewayVal["SIWAValidationModule"]
+        AAVal["ERC8128AAValidationModule"]
     end
 
     subgraph "Libraries"
@@ -275,6 +275,7 @@ graph TB
         HCL["HookConfigLib"]
         TDL["TokenDataLib"]
         CoreLib["ERC8128CoreLib"]
+        SIWALib["SIWACoreLib"]
         DomainLib["EIP712DomainLib"]
         Storage["MSCAStorage"]
         Types["ERC8128Types"]
@@ -313,7 +314,7 @@ graph TB
     HCL --> MEL
     MEL --> ModTypes
     GatewayVal --> PolicyReg
-    GatewayVal --> CoreLib
+    GatewayVal --> SIWALib
     GatewayVal --> Types
     AAVal --> PolicyReg
     AAVal --> CoreLib
@@ -381,12 +382,15 @@ classDiagram
         +address entryPoint ~immutable~
         -uint256 _state
         -bool _bootstrapActive
+        -ModuleEntity _defaultSignatureValidationFunction
         +token() +owner() +nonce()
         +execute() +executeBatch()
         +validateUserOp() +executeUserOp()
         +isValidSignature()
         +installValidation() +uninstallValidation()
         +installExecution() +uninstallExecution()
+        +setDefaultSignatureValidation()
+        +clearDefaultSignatureValidation()
         +disableBootstrap()
         #_owner()* address
     }
@@ -500,8 +504,8 @@ graph TB
     subgraph "Validation Modules"
         Owner["OwnerValidationModule<br/>UserOp ✓ Runtime ✓ Signature ✓"]
         Session["SessionKeyValidationModule<br/>UserOp ✓ Runtime ✓ Signature ✓"]
-        Gateway["ERC8128GatewayValidationModuleV2<br/>Signature ✓ only"]
-        AA["ERC8128AAValidationModuleV2<br/>UserOp ✓ only"]
+        Gateway["SIWAValidationModule<br/>Signature ✓ only"]
+        AA["ERC8128AAValidationModule<br/>UserOp ✓ only"]
     end
 
     EP --> VFL
@@ -575,18 +579,19 @@ graph TB
     subgraph "Module Capabilities"
         Owner["OwnerValidationModule<br/>Flags: 0x07 (all)<br/>EIP-712 + ERC-6492 + ERC-1271"]
         Session["SessionKeyValidationModule<br/>Flags: 0x03 (UserOp + Sig)<br/>Scoped keys + budget tracking"]
-        Gateway["ERC8128GatewayValidationModuleV2<br/>Flags: 0x02 (Sig only)<br/>HTTP auth via ERC-1271"]
-        AA["ERC8128AAValidationModuleV2<br/>Flags: 0x01 (UserOp only)<br/>AA session delegation + Merkle scope"]
+        Gateway["SIWAValidationModule<br/>Flags: 0x02 (Sig only)<br/>HTTP auth via ERC-1271"]
+        AA["ERC8128AAValidationModule<br/>Flags: 0x01 (UserOp only)<br/>AA session delegation + Merkle scope"]
     end
 
     subgraph "Shared Infrastructure"
         PolicyReg["ERC8128PolicyRegistry<br/>(shared policy state)"]
-        CoreLib["ERC8128CoreLib<br/>(shared crypto helpers)"]
+        SIWALib["SIWACoreLib<br/>(gateway signer helpers)"]
+        CoreLib["ERC8128CoreLib<br/>(AA crypto helpers)"]
     end
 
     Gateway --> PolicyReg
     AA --> PolicyReg
-    Gateway --> CoreLib
+    Gateway --> SIWALib
     AA --> CoreLib
 ```
 
@@ -594,8 +599,8 @@ graph TB
 |---|---|---|---|
 | `OwnerValidationModule` | EIP-712 typed data (account as verifyingContract) | Stateless — resolves owner from ERC-6551 | EOA, SCA, and ERC-6492 counterfactual owner support |
 | `SessionKeyValidationModule` | ERC-191 tagged hash (chain + module + account + entity) | Module-internal mappings with epoch/nonce revocation | Target/selector allowlists, value limits, cumulative budget |
-| `ERC8128GatewayValidationModuleV2` | EIP-712 typed data (module as verifyingContract) | External `ERC8128PolicyRegistry` | Merkle-proven HTTP scope, replay/class-bound controls |
-| `ERC8128AAValidationModuleV2` | EIP-712 typed data (module as verifyingContract) | External `ERC8128PolicyRegistry` | Merkle multiproof for batch, install presets, delegatecall control |
+| `SIWAValidationModule` | Raw ERC-1271 `(hash, signature)` for SIWA/ERC-8128 gateway requests | External `ERC8128PolicyRegistry` | Policy-gated signer validation with EOA recovery + contract-owner/TBA fallback |
+| `ERC8128AAValidationModule` | EIP-712 typed data (module as verifyingContract) | External `ERC8128PolicyRegistry` | Merkle multiproof for batch, install presets, delegatecall control |
 
 ### Module Lifecycle
 
@@ -743,33 +748,37 @@ For full details, see [ERC4337-Account-Abstraction-Integration-Design.md](./ERC4
 
 ## 9. Session Delegation and HTTP Authentication
 
-The ERC-8128 integration provides session-based delegation for both HTTP API authentication (gateway path) and onchain execution (AA path). A unified policy registry and shared cryptographic library ensure consistent behavior across both paths.
+The ERC-8128 integration provides session-based delegation for both HTTP API authentication (gateway path) and onchain execution (AA path). Both paths share a unified policy registry while using path-specific signature validation logic.
 
-### Two-Layer Signature Model
+### Gateway and AA Signature Models
 
 ```mermaid
 graph TB
-    subgraph "Outer Layer — ERC-8128 (Offchain)"
+    subgraph "Gateway Path (ERC-1271)"
         M["RFC 9421 Signature Base M"]
-        H["H = keccak256(ERC-191 prefix ∥ M)"]
-        OuterSig["HTTP Signature over H"]
+        H["H = keccak256(ERC-191 prefix || M)"]
+        RawSig["Raw SIWA/ERC-8128 signature bytes"]
+        GWCall["SCA.isValidSignature(H, rawSig)"]
+        GWMod["SIWAValidationModule.validateSignature(...)"]
     end
 
-    subgraph "Inner Layer — EIP-712 (Onchain)"
+    subgraph "AA Path (ERC-4337)"
         Domain["EIP-712 Domain<br/>name=AgentWalletERC8128, version=2<br/>chainId, verifyingContract=module"]
         Struct["SessionAuthorizationV2 struct hash"]
         Digest["digest = keccak256(0x1901 ∥ domainSep ∥ structHash)"]
         InnerSig["Session Key Signature over digest"]
     end
 
-    M --> H --> OuterSig
-    OuterSig -->|"SCA: isValidSignature(H, envelope)"| Domain
+    M --> H --> GWCall
+    RawSig --> GWCall
+    GWCall --> GWMod
     Domain --> Digest
     Struct --> Digest
     Digest --> InnerSig
 ```
 
-The outer layer is standard ERC-8128 HTTP signature verification. The inner layer is the session delegation envelope validated onchain by the installed modules.
+Gateway path accepts raw ERC-1271 signatures and enforces policy state through `SIWAValidationModule`.  
+AA path uses `SessionAuthV2` and EIP-712 typed authorization in `ERC8128AAValidationModule`.
 
 ### Unified Policy Architecture
 
@@ -784,12 +793,12 @@ graph TB
     end
 
     subgraph "Gateway Path (ERC-1271)"
-        GW["ERC8128GatewayValidationModuleV2"]
-        GWClaims["GatewayClaimsV2<br/>method, authority, path,<br/>replay controls, scope proof"]
+        GW["SIWAValidationModule"]
+        GWSigner["Signer validation<br/>EOA recovery OR<br/>owner()/ERC-1271 fallback"]
     end
 
     subgraph "AA Path (ERC-4337)"
-        AA["ERC8128AAValidationModuleV2"]
+        AA["ERC8128AAValidationModule"]
         AAClaims["AAClaimsV2<br/>call targets, selectors,<br/>value limits, Merkle multiproof"]
     end
 
@@ -799,7 +808,7 @@ graph TB
     Registry --> Epoch
     Registry --> Nonce
     Registry --> Guardian
-    GW --> GWClaims
+    GW --> GWSigner
     AA --> AAClaims
 ```
 
@@ -825,19 +834,14 @@ graph TD
     R4 -->|"Affects"| Hierarchy["Policy → Entity → Account"]
 ```
 
-### Replay Prevention
+### Replay and Binding Guarantees
 
-The inner session signature is bound to seven dimensions, preventing replay across any axis:
-
-| Binding | Field | Prevents |
+| Path | Binding Inputs | Prevents |
 |---|---|---|
-| Module | EIP-712 `verifyingContract` | Cross-module replay |
-| Mode | `mode` (0=gateway, 1=AA) | Cross-path replay |
-| Chain | EIP-712 `chainId` | Cross-chain replay |
-| Account | `account` in struct hash | Cross-account replay |
-| Entity | `entityId` in struct hash | Cross-entity replay |
-| Request | `requestHash` (H or userOpHash) | Cross-request replay |
-| Claims | `claimsHash` commitment | Claims tampering |
+| Gateway (`SIWAValidationModule`) | `hash` (`H`) + signer policy key `(account, entityId, signer)` + policy time/pause state | Unauthorized signers, tampered request hashes, and use after revoke/pause/expiry |
+| AA (`ERC8128AAValidationModule`) | EIP-712 `verifyingContract`, `mode`, `chainId`, `account`, `entityId`, `requestHash`, `claimsHash`, `epoch`, `policyNonce` | Cross-module/path/chain/account/entity replay and stale-policy reuse |
+
+Gateway replay semantics such as nonce/class-bound handling are enforced by the offchain ERC-8128 verifier.
 
 ### AA Scope Verification
 
@@ -855,7 +859,7 @@ flowchart TD
     F -->|"Invalid"| H["Reject"]
 ```
 
-For full details, see [ERC8128-SIWA-Spec.md](./ERC8128-SIWA-Spec.md).
+For full details, see [SIWA-Integration-Design.md](./SIWA-Integration-Design.md).
 
 ---
 
@@ -894,7 +898,7 @@ sequenceDiagram
     participant Adapter as ERC8004IdentityAdapter
 
     Agent->>Gateway: HTTP request + ERC-8128 signature
-    Gateway->>SCA: isValidSignature(H, envelope)
+    Gateway->>SCA: isValidSignature(H, rawSignature)
     SCA-->>Gateway: Valid ✓
     Gateway->>Adapter: getAgentId(account)
     Adapter-->>Gateway: agentId
@@ -978,7 +982,7 @@ flowchart TD
     B --> C{"Deployment mode?"}
     C -->|Direct| D["Deploy DirectDeploymentFactory"]
     C -->|Beacon| E["Deploy BeaconProxy +<br/>BeaconGovernance"]
-    D --> F["Deploy validation modules<br/>OwnerValidation, SessionKey,<br/>ERC8128PolicyRegistry,<br/>ERC8128Gateway, ERC8128AA"]
+    D --> F["Deploy validation modules<br/>OwnerValidation, SessionKey,<br/>ERC8128PolicyRegistry,<br/>SIWAValidation, ERC8128AA"]
     E --> F
     F --> G["Create account instances"]
     G --> H["Install validation modules<br/>(via bootstrap UserOps<br/>or direct owner calls)"]
@@ -1123,8 +1127,8 @@ src/
 │   ├── validation/
 │   │   ├── OwnerValidationModule.sol              # Owner auth (EIP-712 + ERC-6492 + ERC-1271)
 │   │   ├── SessionKeyValidationModule.sol         # Scoped session keys with budget tracking
-│   │   ├── ERC8128GatewayValidationModuleV2.sol   # ERC-1271 path for HTTP auth
-│   │   └── ERC8128AAValidationModuleV2.sol        # ERC-4337 path for AA session delegation
+│   │   ├── SIWAValidationModule.sol   # ERC-1271 path for HTTP auth
+│   │   └── ERC8128AAValidationModule.sol        # ERC-4337 path for AA session delegation
 │   └── execution/                                 # (extensible — no built-in execution modules)
 │
 ├── libraries/
@@ -1140,6 +1144,8 @@ src/
 │   ├── TokenDataLib.sol               # ERC-6551 bytecode footer extraction
 │   ├── ERC8128CoreLib.sol             # Shared ERC-8128 crypto helpers
 │   ├── ERC8128Types.sol               # ERC-8128 struct definitions
+│   ├── SIWACoreLib.sol                # SIWA signer + claims hash helpers
+│   ├── SIWATypes.sol                  # SIWA struct definitions
 │   └── EIP712DomainLib.sol            # EIP-712 domain serialize/parse
 │
 ├── adapters/
@@ -1170,8 +1176,8 @@ src/
 | `ERC8128PolicyRegistry` | Singleton registry | setPolicy, revokeSessionKey, revokeAllSessionKeys, pausePolicy, setGuardian | Policy mappings keyed by (account, entityId, sessionKey, epoch, nonce) |
 | `OwnerValidationModule` | Validation module | IERC6900ValidationModule | Stateless |
 | `SessionKeyValidationModule` | Validation module | IERC6900ValidationModule | Internal policy + budget mappings |
-| `ERC8128GatewayValidationModuleV2` | Validation module | IERC6900ValidationModule | Reads from PolicyRegistry |
-| `ERC8128AAValidationModuleV2` | Validation module | IERC6900ValidationModule | Install presets + reads from PolicyRegistry |
+| `SIWAValidationModule` | Validation module | IERC6900ValidationModule | Raw ERC-1271 signer validation + reads from PolicyRegistry |
+| `ERC8128AAValidationModule` | Validation module | IERC6900ValidationModule | Install presets + reads from PolicyRegistry |
 | `BeaconProxy` | Proxy | IBeacon delegation | Immutable beacon address |
 | `BeaconGovernance` | Governance | queue, execute, cancel | Timelocked operation queue |
 | `DirectDeploymentFactory` | Factory | deploy helpers | None |
@@ -1225,25 +1231,23 @@ sequenceDiagram
     participant Agent as Agent Runtime
     participant Gateway as API Gateway
     participant SCA as NFTBoundMSCA
-    participant GWMod as GatewayValidationModuleV2
+    participant GWMod as SIWAValidationModule
     participant Registry as ERC8128PolicyRegistry
 
     Agent->>Agent: Construct HTTP request
     Agent->>Agent: Build RFC 9421 signature base M
     Agent->>Agent: Compute H = keccak256(ERC-191 ∥ M)
-    Agent->>Agent: Build SessionAuthV2 envelope (mode=0, requestHash=H)
-    Agent->>Agent: Session key signs EIP-712 digest
+    Agent->>Agent: Sign H (SIWA/ERC-8128 raw signature)
     Agent->>Gateway: HTTP request + Signature headers
 
     Gateway->>Gateway: Parse Signature-Input, reconstruct M, compute H
-    Gateway->>SCA: isValidSignature(H, sessionAuthEnvelope)
-    SCA->>SCA: Decode (ModuleEntity, moduleSig)
-    SCA->>GWMod: validateSignature(account, entityId, caller, H, envelope)
-    GWMod->>GWMod: Decode SessionAuthV2, verify mode=0, requestHash=H
+    Gateway->>SCA: isValidSignature(H, rawSignature)
+    SCA->>SCA: Route raw signature to default signature validation function
+    SCA->>GWMod: validateSignature(account, entityId, caller, H, rawSignature)
     GWMod->>Registry: getPolicy + isPolicyActive
     Registry-->>GWMod: policy data
-    GWMod->>GWMod: Verify time windows, claims, scope proof
-    GWMod->>GWMod: Verify EIP-712 session signature
+    GWMod->>GWMod: Verify signer (EOA recover or owner()/ERC-1271 fallback)
+    GWMod->>GWMod: Enforce policy window and pause state
     GWMod-->>SCA: ERC1271_MAGICVALUE
     SCA-->>Gateway: Valid ✓
     Gateway-->>Agent: HTTP response
@@ -1257,7 +1261,7 @@ sequenceDiagram
     participant Bundler as Bundler
     participant EP as EntryPoint
     participant SCA as NFTBoundMSCA
-    participant AAMod as ERC8128AAValidationModuleV2
+    participant AAMod as ERC8128AAValidationModule
     participant Registry as ERC8128PolicyRegistry
     participant Target as Allowed Target
 
@@ -1352,10 +1356,13 @@ test/
 ├── modules/                                       # Module-specific tests
 │   ├── OwnerValidationModule.t.sol                # EIP-712, EOA/SCA/ERC-6492 paths
 │   ├── SessionKeyValidationModule.t.sol           # Policy, budget, epoch revocation
-│   ├── ERC8128GatewayValidationModuleV2.t.sol     # Gateway validation + tamper rejection
-│   ├── ERC8128AAValidationModuleV2.t.sol          # AA validation, Merkle proofs, presets
-│   ├── ERC8128V2CrossCutting.t.sol                # Cross-module revocation + replay prevention
-│   └── ERC8128V2UnitConformance.t.sol             # Interface conformance
+│   ├── SIWAValidationModule.t.sol     # Gateway validation + tamper rejection
+│   ├── ERC8128AAValidationModule.t.sol          # AA validation, Merkle proofs, presets
+│
+├── siwa/                                          # SIWA compatibility helpers and vectors
+│   ├── SIWACompatVectors.t.sol                    # SIWA deterministic positive/negative vectors
+│   ├── SIWATestHelper.sol                         # SIWA fixture and signing helpers
+│   └── SIWATypesAndCoreLib.t.sol                  # SIWA type/core library properties
 │
 ├── libraries/                                     # Library unit tests
 │   ├── ERC8128CoreLib.t.sol                       # Digest, key derivation, scope leaves

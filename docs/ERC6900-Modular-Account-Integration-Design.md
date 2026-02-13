@@ -81,8 +81,8 @@ graph TB
     subgraph "Validation Modules"
         OwnerMod["OwnerValidationModule"]
         SessionMod["SessionKeyValidationModule"]
-        GatewayMod["ERC8128GatewayValidationModuleV2"]
-        AAMod["ERC8128AAValidationModuleV2"]
+        GatewayMod["SIWAValidationModule"]
+        AAMod["ERC8128AAValidationModule"]
     end
 
     subgraph "Hook Modules"
@@ -713,8 +713,8 @@ graph TB
     subgraph "Validation Modules"
         Owner["OwnerValidationModule<br/>moduleId: agent.wallet.owner-validation.1.0.0"]
         Session["SessionKeyValidationModule<br/>moduleId: agent.wallet.session-validation.1.0.0"]
-        Gateway["ERC8128GatewayValidationModuleV2<br/>ERC-1271 path"]
-        AA["ERC8128AAValidationModuleV2<br/>ERC-4337 path"]
+        Gateway["SIWAValidationModule<br/>ERC-1271 path"]
+        AA["ERC8128AAValidationModule<br/>ERC-4337 path"]
     end
 
     subgraph "Validation Types"
@@ -737,8 +737,8 @@ graph TB
 |---|---|---|---|---|---|
 | `OwnerValidationModule` | Yes | Yes | Yes | EIP-712 typed data over account address | None (stateless — resolves owner from `IERC6551Account.owner()`) |
 | `SessionKeyValidationModule` | Yes | Yes | Yes | ERC-191 tagged hash bound to chain + module + account + entity | Module-internal mappings with epoch/nonce revocation |
-| `ERC8128GatewayValidationModuleV2` | No | No | Yes | EIP-712 typed data (`GatewayClaimsV2`) | External `ERC8128PolicyRegistry` |
-| `ERC8128AAValidationModuleV2` | Yes | No | No | EIP-712 typed data (`SessionAuthorizationV2`) | External `ERC8128PolicyRegistry` |
+| `SIWAValidationModule` | No | No | Yes | EIP-712 typed data (`GatewayClaimsV2`) | External `ERC8128PolicyRegistry` |
+| `ERC8128AAValidationModule` | Yes | No | No | EIP-712 typed data (`SessionAuthorizationV2`) | External `ERC8128PolicyRegistry` |
 
 ### OwnerValidationModule
 
@@ -815,8 +815,8 @@ Revocation granularities:
 
 The two ERC-8128 validation modules split the ERC-6900 validation surface by path:
 
-- `ERC8128GatewayValidationModuleV2` handles `validateSignature` only (ERC-1271 path for gateway-originated claims). It rejects `validateUserOp` and `validateRuntime`.
-- `ERC8128AAValidationModuleV2` handles `validateUserOp` only (ERC-4337 path for AA session delegation with Merkle-proven call scope). It rejects `validateSignature` and `validateRuntime`.
+- `SIWAValidationModule` handles `validateSignature` only (ERC-1271 path for gateway-originated claims). It rejects `validateUserOp` and `validateRuntime`.
+- `ERC8128AAValidationModule` handles `validateUserOp` only (ERC-4337 path for AA session delegation with Merkle-proven call scope). It rejects `validateSignature` and `validateRuntime`.
 
 Both modules read policy state from the shared external `ERC8128PolicyRegistry` rather than maintaining module-internal storage. See the [ERC-8128 Unified Session Architecture](./ERC8128-SIWA-Spec.md) for full details.
 
@@ -963,8 +963,8 @@ A module can support both by setting both flags during installation.
 ### ERC-8128 (Signed HTTP Requests)
 
 ERC-8128 session delegation is implemented as two ERC-6900 validation modules that share an external `ERC8128PolicyRegistry`:
-- `ERC8128GatewayValidationModuleV2` — installed with `isSignatureValidation` flag for the ERC-1271 gateway path
-- `ERC8128AAValidationModuleV2` — installed with `isUserOpValidation` flag for the ERC-4337 AA path
+- `SIWAValidationModule` — installed with `isSignatureValidation` flag for the ERC-1271 gateway path
+- `ERC8128AAValidationModule` — installed with `isUserOpValidation` flag for the ERC-4337 AA path
 
 This split ensures each module handles exactly one validation type, preventing cross-path misuse.
 
@@ -1065,8 +1065,8 @@ sequenceDiagram
     participant OwnerMod as OwnerValidationModule
     participant SessionMod as SessionKeyValidationModule
     participant Registry as ERC8128PolicyRegistry
-    participant GatewayMod as ERC8128GatewayValidationModuleV2
-    participant AAMod as ERC8128AAValidationModuleV2
+    participant GatewayMod as SIWAValidationModule
+    participant AAMod as ERC8128AAValidationModule
     participant SCA as NFTBoundMSCA (account)
 
     Note over Deployer: 1. Deploy validation modules
@@ -1097,8 +1097,8 @@ Each validation module is installed with a `ValidationConfig` that encodes its c
 |---|---|---|
 | `OwnerValidationModule` | `isUserOpValidation + isSignatureValidation + isGlobal` (0x07) | All selectors (global) |
 | `SessionKeyValidationModule` | `isUserOpValidation + isSignatureValidation` (0x03) | `execute`, `executeBatch`, `execute(address,uint256,bytes,uint8)` |
-| `ERC8128GatewayValidationModuleV2` | `isSignatureValidation` (0x02) | `isValidSignature` |
-| `ERC8128AAValidationModuleV2` | `isUserOpValidation` (0x01) | `execute`, `executeBatch` |
+| `SIWAValidationModule` | `isSignatureValidation` (0x02) | `isValidSignature` |
+| `ERC8128AAValidationModule` | `isUserOpValidation` (0x01) | `execute`, `executeBatch` |
 
 ## Testing Strategy
 
@@ -1110,10 +1110,9 @@ Each validation module is installed with a `ValidationConfig` that encodes its c
 | `test/core/ResolverBoundMSCA.t.sol` | Resolver-based ownership with same ERC-6900 surface |
 | `test/modules/OwnerValidationModule.t.sol` | Owner validation: EIP-712 digest, EOA/SCA/ERC-6492 paths, `validateRuntime`, `validateSignature` |
 | `test/modules/SessionKeyValidationModule.t.sol` | Session key validation: policy enforcement, call permission parsing, budget tracking, epoch revocation, runtime replay protection |
-| `test/modules/ERC8128GatewayValidationModuleV2.t.sol` | Gateway signature validation, type enforcement (rejects UserOp/runtime) |
-| `test/modules/ERC8128AAValidationModuleV2.t.sol` | AA UserOp validation, Merkle proofs, install presets, type enforcement |
-| `test/modules/ERC8128V2CrossCutting.t.sol` | Cross-module revocation, scope rotation, replay prevention |
-| `test/modules/ERC8128V2UnitConformance.t.sol` | Interface conformance, `supportsInterface`, `moduleId` |
+| `test/modules/SIWAValidationModule.t.sol` | Gateway signature validation, type enforcement (rejects UserOp/runtime) |
+| `test/modules/ERC8128AAValidationModule.t.sol` | AA UserOp validation, Merkle proofs, install presets, type enforcement |
+| `test/siwa/SIWACompatVectors.t.sol` | SIWA canonical vectors (positive/negative/pause cases) |
 | `test/core/DirectDeploymentFactory.t.sol` | Factory deployment with EntryPoint binding |
 | `test/core/BeaconProxy.t.sol` | Beacon proxy delegation |
 | `test/core/BeaconGovernance.t.sol` | Timelock governance for upgrades |

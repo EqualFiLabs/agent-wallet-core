@@ -12,9 +12,9 @@ import {ERC8128CoreLib} from "../../libraries/ERC8128CoreLib.sol";
 import {Call} from "../../libraries/ModuleTypes.sol";
 import {SessionAuthV2, SessionPolicyV2, AAClaimsV2, AACallClaimV2, ParsedCall} from "../../libraries/ERC8128Types.sol";
 
-/// @title ERC8128AAValidationModuleV2
+/// @title ERC8128AAValidationModule
 /// @notice ERC-6900 validation module for the ERC-4337 path.
-contract ERC8128AAValidationModuleV2 is IERC6900ValidationModule {
+contract ERC8128AAValidationModule is IERC6900ValidationModule {
     bytes4 internal constant ERC1271_INVALID = 0xffffffff;
     uint256 internal constant SIG_VALIDATION_FAILED = 1;
 
@@ -92,7 +92,7 @@ contract ERC8128AAValidationModuleV2 is IERC6900ValidationModule {
     }
 
     function moduleId() external pure override returns (string memory) {
-        return "agent.wallet.erc8128-aa-validation.2.0.0";
+        return "agent.wallet.erc8128-aa-validation.1.0.0";
     }
 
     function supportsInterface(bytes4 interfaceId) external pure override returns (bool) {
