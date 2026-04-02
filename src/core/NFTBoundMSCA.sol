@@ -33,6 +33,7 @@ abstract contract NFTBoundMSCA is
     bytes4 internal constant ERC6551_VALID_SIGNER = 0x523e3260;
     bytes4 internal constant ERC1271_MAGICVALUE = 0x1626ba7e;
     uint256 internal constant SIG_VALIDATION_FAILED = 1;
+    bytes4 internal constant EXECUTE_WITH_OP_SELECTOR = bytes4(keccak256("execute(address,uint256,bytes,uint8)"));
 
     address public immutable entryPoint;
 
@@ -494,14 +495,57 @@ abstract contract NFTBoundMSCA is
         ValidationFlowLib.ensureSelectorAllowed(validationFunction, selector);
         ValidationFlowLib.runRuntimeValidation(validationFunction, address(this), msg.sender, msg.value, data, moduleAuth);
 
-        (bool ok, bytes memory result) = address(this).call(data);
-        if (!ok) {
-            assembly {
-                revert(add(result, 0x20), mload(result))
-            }
-        }
+        bytes memory result = _executeValidatedRuntimeCall(data, selector);
         _incrementState();
         return result;
+    }
+
+    function _executeValidatedRuntimeCall(bytes memory data, bytes4 selector) internal returns (bytes memory result) {
+        bytes memory payload = new bytes(data.length - 4);
+        for (uint256 i = 4; i < data.length; i++) {
+            payload[i - 4] = data[i];
+        }
+
+        if (selector == IERC6900Account.execute.selector) {
+            (address target, uint256 value, bytes memory callData) = abi.decode(payload, (address, uint256, bytes));
+            return _call(target, value, callData);
+        }
+
+        if (selector == IERC6900Account.executeBatch.selector) {
+            Call[] memory calls = abi.decode(payload, (Call[]));
+            MSCAStorage.Layout storage ds = MSCAStorage.layout();
+            bytes[] memory results = new bytes[](calls.length);
+            for (uint256 i = 0; i < calls.length; i++) {
+                if (ds.installedModules[calls[i].target]) {
+                    revert ModuleTargetNotAllowed(calls[i].target);
+                }
+                results[i] = _call(calls[i].target, calls[i].value, calls[i].data);
+            }
+            return abi.encode(results);
+        }
+
+        if (selector == EXECUTE_WITH_OP_SELECTOR) {
+            (address target, uint256 value, bytes memory callData, uint8 operation) =
+                abi.decode(payload, (address, uint256, bytes, uint8));
+            if (operation == 0) {
+                return _call(target, value, callData);
+            }
+            if (operation == 1) {
+                if (value != 0) {
+                    revert UnsupportedOperation(operation);
+                }
+                return _delegateCall(target, callData);
+            }
+            revert UnsupportedOperation(operation);
+        }
+
+        (bool ok, bytes memory returnData) = address(this).call(data);
+        if (!ok) {
+            assembly {
+                revert(add(returnData, 0x20), mload(returnData))
+            }
+        }
+        return returnData;
     }
 
     function _executeModuleWithHooks(bytes calldata data) internal returns (bytes memory) {

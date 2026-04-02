@@ -196,6 +196,40 @@ contract ERC721BoundMSCATest is Test {
         assertTrue(account.supportsInterface(type(IERC721Receiver).interfaceId));
     }
 
+    function test_RuntimeValidatedExecute_DoesNotReenterOwnerGate() public {
+        MockValidationModule validationModule = new MockValidationModule();
+        MockTarget target = new MockTarget();
+
+        ValidationConfig validationConfig = ValidationConfigLib.pack(
+            address(validationModule),
+            7,
+            false,
+            false,
+            true
+        );
+
+        bytes4[] memory selectors = new bytes4[](1);
+        selectors[0] = IERC6900Account.execute.selector;
+
+        vm.prank(owner);
+        account.installValidation(validationConfig, selectors, bytes(""), new bytes[](0));
+
+        bytes memory data = abi.encodeWithSelector(
+            IERC6900Account.execute.selector,
+            address(target),
+            0,
+            abi.encodeWithSelector(MockTarget.store.selector, 123, bytes("runtime"))
+        );
+        bytes memory authorization = abi.encode(ModuleEntityLib.pack(address(validationModule), 7), bytes("auth"));
+
+        vm.prank(address(0xBEEF));
+        bytes memory result = account.executeWithRuntimeValidation(data, authorization);
+
+        assertEq(keccak256(result), keccak256(abi.encode(keccak256(bytes("runtime")))));
+        assertEq(target.lastValue(), 123);
+        assertEq(target.lastData(), bytes("runtime"));
+    }
+
     function test_SupportsInterface_ModuleRegisteredInterfaceIds_RoundTrip() public {
         MockExecutionModule executionModule = new MockExecutionModule();
         bytes4 interfaceId = 0x9abc1234;
