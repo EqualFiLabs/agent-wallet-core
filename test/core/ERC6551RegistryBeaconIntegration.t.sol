@@ -2,6 +2,7 @@
 pragma solidity ^0.8.20;
 
 import {Test} from "forge-std/Test.sol";
+import {IERC1271} from "@openzeppelin/contracts/interfaces/IERC1271.sol";
 import {IBeacon} from "@openzeppelin/contracts/proxy/beacon/IBeacon.sol";
 
 import {BeaconProxy} from "../../src/core/BeaconProxy.sol";
@@ -61,6 +62,33 @@ contract IntegrationMockBeacon is IBeacon {
 }
 
 contract ERC6551RegistryBeaconIntegrationTest is Test {
+    function test_Integration_ProxyCreatedAccountStartsWithBootstrapEnabledAndAcceptsOwnerERC1271Signature() public {
+        address entryPoint = makeAddr("entryPoint");
+        uint256 ownerPk = 0xA11CE;
+        address owner = vm.addr(ownerPk);
+        bytes32 salt = keccak256("erc6551-bootstrap-account");
+        uint256 tokenId = 7;
+        bytes32 digest = keccak256("erc6551-bootstrap-signature");
+
+        MockERC721 token = new MockERC721();
+        token.mint(owner, tokenId);
+
+        ERC721BoundMSCA accountImplementation = new ERC721BoundMSCA(entryPoint);
+        IntegrationMockBeacon beacon = new IntegrationMockBeacon(address(accountImplementation));
+        BeaconProxy beaconProxyImplementation = new BeaconProxy(address(beacon));
+        MockERC6551Registry registry = new MockERC6551Registry();
+
+        address accountAddress = registry.createAccount(
+            address(beaconProxyImplementation), salt, block.chainid, address(token), tokenId
+        );
+
+        (uint8 v, bytes32 r, bytes32 s) = vm.sign(ownerPk, digest);
+        bytes memory signature = abi.encodePacked(r, s, v);
+
+        assertTrue(ERC721BoundMSCA(payable(accountAddress)).bootstrapActive());
+        assertEq(IERC1271(accountAddress).isValidSignature(digest, signature), IERC1271.isValidSignature.selector);
+    }
+
     function test_Integration_EndToEndRegistryBeaconProxyAccountCreationOwnershipResolution() public {
         address entryPoint = makeAddr("entryPoint");
         address initialOwner = makeAddr("initialOwner");

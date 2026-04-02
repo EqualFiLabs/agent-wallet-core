@@ -38,7 +38,9 @@ abstract contract NFTBoundMSCA is
     address public immutable entryPoint;
 
     uint256 internal _state;
-    bool internal _bootstrapActive;
+    // Proxy-created accounts start from zeroed storage, so bootstrap must be
+    // represented as "not disabled" rather than an explicitly initialized true flag.
+    bool internal _bootstrapDisabled;
     ModuleEntity internal _defaultSignatureValidationFunction;
 
     event BootstrapDisabled(address indexed account, uint256 timestamp);
@@ -54,7 +56,6 @@ abstract contract NFTBoundMSCA is
 
     constructor(address entryPoint_) {
         entryPoint = entryPoint_;
-        _bootstrapActive = true;
     }
 
     receive() external payable {}
@@ -86,15 +87,15 @@ abstract contract NFTBoundMSCA is
 
     function disableBootstrap() external {
         _requireOwner();
-        if (!_bootstrapActive) {
+        if (_bootstrapDisabled) {
             revert BootstrapAlreadyDisabled();
         }
-        _bootstrapActive = false;
+        _bootstrapDisabled = true;
         emit BootstrapDisabled(address(this), block.timestamp);
     }
 
     function bootstrapActive() external view returns (bool) {
-        return _bootstrapActive;
+        return !_bootstrapDisabled;
     }
 
     function validateUserOp(PackedUserOperation calldata userOp, bytes32 userOpHash, uint256 missingAccountFunds)
@@ -222,7 +223,7 @@ abstract contract NFTBoundMSCA is
     }
 
     function isValidSignature(bytes32 hash, bytes calldata signature) external view virtual override returns (bytes4) {
-        if (_bootstrapActive && signature.length == 65) {
+        if (!_bootstrapDisabled && signature.length == 65) {
             if (_bootstrapValidateSignature(hash, signature)) {
                 return ERC1271_MAGICVALUE;
             }
@@ -356,7 +357,7 @@ abstract contract NFTBoundMSCA is
     }
 
     function _bootstrapValidateUserOp(bytes32 userOpHash, bytes calldata signature) internal view returns (uint256) {
-        if (!_bootstrapActive) {
+        if (_bootstrapDisabled) {
             return SIG_VALIDATION_FAILED;
         }
 
@@ -370,7 +371,7 @@ abstract contract NFTBoundMSCA is
 
     function _validateUserOp(PackedUserOperation calldata userOp, bytes32 userOpHash) internal returns (uint256) {
         if (userOp.signature.length == 65) {
-            if (_bootstrapActive) {
+            if (!_bootstrapDisabled) {
                 return _bootstrapValidateUserOp(userOpHash, userOp.signature);
             }
             return SIG_VALIDATION_FAILED;
@@ -566,7 +567,7 @@ abstract contract NFTBoundMSCA is
     }
 
     function _bootstrapValidateSignature(bytes32 hash, bytes calldata signature) internal view returns (bool) {
-        if (!_bootstrapActive) {
+        if (_bootstrapDisabled) {
             return false;
         }
 
